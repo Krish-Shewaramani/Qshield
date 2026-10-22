@@ -1,0 +1,12 @@
+# Phase 3 backend pins. cryptography remains at the approved version.
+# Exact versions match the compatibility findings recorded in PROJECT_BRIEF.md.
+cryptography==50.0.2
+cffi==2.1.1
+pycparser==3.11
+fastapi==0.143.0
+uvicorn==0.54.0
+pytest==9.1.1
+httpx==0.28.1
+pydantic==2.14.1
+starlette==1.8.0
+python-multipart==0.0.32
