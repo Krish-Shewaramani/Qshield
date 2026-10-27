@@ -11,7 +11,17 @@ export type KeyRecord = {
   public_key_pem: string
 }
 
-export type TrustedKeyRecord = KeyRecord & { trusted: boolean }
+export type TrustUsage = 'full' | 'verify_only' | 'suspended'
+export type TrustedKeyRecord = KeyRecord & {
+  trusted: boolean
+  // Optional for compatibility with responses that predate contact lifecycle fields.
+  usage?: TrustUsage
+  contact_id?: string | null
+  contact_label?: string | null
+  contact_key_state?: string | null
+  trust_origin?: string | null
+}
+export const fullyTrusted = (record: TrustedKeyRecord) => record.trusted && (record.usage ?? 'full') === 'full'
 export type PublicKeyPreview = Pick<KeyRecord, 'algorithm' | 'key_id' | 'public_key_pem'>
 export type VerifyResponse = {
   verified: boolean
@@ -19,6 +29,82 @@ export type VerifyResponse = {
   recipient_key_id: string
   created_at: number
 }
+
+export type ContactBundleKey = {
+  purpose: 'encryption' | 'signing'
+  algorithm: string
+  public_key_pem: string
+  fingerprint: string
+}
+export type ContactBundle = {
+  format: 'quantumshield-contact-bundle'
+  version: 1
+  label: string
+  keys: ContactBundleKey[]
+}
+export type ContactBundlePreview = {
+  label: string
+  keys: { purpose: string; algorithm: string; key_id: string; public_key_pem: string }[]
+  trusted: false
+}
+
+export type PairingStatus = 'new_key' | 'new_purpose' | 'pending_replacement' | 'already_present' | 'conflict' | 'previously_retired' | 'pending_conflict'
+export type KeyAssessment = {
+  fingerprint: string
+  algorithm: string
+  purpose: string
+  status: PairingStatus
+  detail: string
+  in_trusted_keys: boolean
+  current_fingerprint: string | null
+  current_key_version: number | null
+  conflicting_contact_id: string | null
+  conflicting_contact_label: string | null
+}
+export type PairingAnalysis = {
+  claimed_label: string
+  target_contact_id: string | null
+  keys: KeyAssessment[]
+  matching_contacts: { contact_id: string; label: string }[]
+  can_stage: boolean
+}
+export type ContactKeyState = 'pending' | 'verified' | 'active' | 'retired'
+export type ContactKey = {
+  fingerprint: string
+  algorithm: string
+  purpose: string
+  public_key_pem: string
+  state: ContactKeyState
+  key_version: number | null
+  // 'ambiguous': legacy key whose pre-pairing trust was never recorded.
+  trust_origin: 'independent' | 'contact' | 'ambiguous' | null
+  trust_status: ContactTrustStatus
+  trust_usage: TrustUsage | null
+  added_at: number
+  verified_at: number | null
+  activated_at: number | null
+  retired_at: number | null
+  in_trusted_keys: boolean
+  usable_for_exchange: boolean
+  usable_for_encryption: boolean
+  usable_for_verification: boolean
+}
+export type ContactTrustStatus = 'untrusted' | 'trusted' | 'activation_pending' | 'missing' | 'downgraded' | 'retired'
+  | 'verification_only' | 'suspended' | 'cleanup_pending' | 'history_unavailable'
+export type Contact = {
+  contact_id: string
+  label: string
+  claimed_label: string
+  confirmed: boolean
+  deletion_pending: boolean
+  needs_reconcile: boolean
+  created_at: number
+  keys: ContactKey[]
+}
+export type StageResult = { analysis: PairingAnalysis; contact: Contact | null; staged_fingerprints: string[] }
+export type ConfirmResult = { contact: Contact; activated: string[]; retired: string[]; activation_pending: string[] }
+export type ReconcileResult = { contact: Contact; failed: string[] }
+export type ContactStorage = { state: 'ready' | 'missing' | 'invalid'; message: string | null; suspended_encryption_keys?: number }
 
 type GenerateKeyInput = { label: string; passphrase: string }
 type ImportTrustedKeyInput = {
@@ -120,7 +206,32 @@ export const api = {
   deleteKey: (keyId: string) => sendJson<void>(`/api/keys/${encodeURIComponent(keyId)}`, 'DELETE'),
   previewPublicKey: (public_key_pem: string) => sendJson<PublicKeyPreview>('/api/trusted-keys/preview', 'POST', { public_key_pem }),
   importTrustedKey: (input: ImportTrustedKeyInput) => sendJson<TrustedKeyRecord>('/api/trusted-keys', 'POST', input),
+  reauthorizeTrustedKey: (keyId: string, confirmed_fingerprint: string) =>
+    sendJson<TrustedKeyRecord>(`/api/trusted-keys/${encodeURIComponent(keyId)}/reauthorize`, 'POST', { confirmed_fingerprint }),
   deleteTrustedKey: (keyId: string) => sendJson<void>(`/api/trusted-keys/${encodeURIComponent(keyId)}`, 'DELETE'),
+  exportContactBundle: (input: { label: string; key_ids: string[] }) =>
+    sendJson<ContactBundle>('/api/contact-bundles/export', 'POST', input),
+  previewContactBundle: (bundle_json: string) =>
+    sendJson<ContactBundlePreview>('/api/contact-bundles/preview', 'POST', { bundle_json }),
+  listContacts: () => getJson<Contact[]>('/api/contacts'),
+  getContactStorage: () => getJson<ContactStorage>('/api/contacts/storage'),
+  reinitializeContactStorage: () =>
+    sendJson<ContactStorage>('/api/contacts/storage/reinitialize', 'POST', { acknowledge_lost_history: true }),
+  analyzePairing: (input: { bundle_json: string; contact_id: string | null }) =>
+    sendJson<PairingAnalysis>('/api/contacts/pairing/analyze', 'POST', input),
+  stagePairing: (input: { bundle_json: string; contact_id: string | null; label: string | null }) =>
+    sendJson<StageResult>('/api/contacts/pairing/stage', 'POST', input),
+  verifyContactKey: (contactId: string, fingerprint: string, confirmed_fingerprint: string) =>
+    sendJson<Contact>(`/api/contacts/${encodeURIComponent(contactId)}/keys/${encodeURIComponent(fingerprint)}/verify`, 'POST', { confirmed_fingerprint }),
+  restoreContactKey: (contactId: string, fingerprint: string, confirmed_fingerprint: string) =>
+    sendJson<Contact>(`/api/contacts/${encodeURIComponent(contactId)}/keys/${encodeURIComponent(fingerprint)}/restore`, 'POST', { confirmed_fingerprint }),
+  reconcileContact: (contactId: string) =>
+    sendJson<ReconcileResult>(`/api/contacts/${encodeURIComponent(contactId)}/reconcile`, 'POST'),
+  confirmContact: (contactId: string) =>
+    sendJson<ConfirmResult>(`/api/contacts/${encodeURIComponent(contactId)}/confirm`, 'POST'),
+  discardContactKey: (contactId: string, fingerprint: string) =>
+    sendJson<void>(`/api/contacts/${encodeURIComponent(contactId)}/keys/${encodeURIComponent(fingerprint)}`, 'DELETE'),
+  deleteContact: (contactId: string) => sendJson<void>(`/api/contacts/${encodeURIComponent(contactId)}`, 'DELETE'),
   encryptFile: (fields: { file: File; recipientKeyId: string; signingKeyId: string; passphrase: string }) =>
     sendMultipart<Blob>('/api/encrypt', fields, true),
   verifyPackage: (fields: { file: File; senderKeyId: string }) =>

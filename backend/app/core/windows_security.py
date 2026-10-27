@@ -27,6 +27,11 @@ def ensure_private_directory(directory: Path) -> None:
     _ensure_private_directory_cached(path)
 
 
+def reset_private_directory_cache() -> None:
+    """Forget cached results so a deliberately recreated directory is secured again."""
+    _ensure_private_directory_cached.cache_clear()
+
+
 @lru_cache(maxsize=64)
 def _ensure_private_directory_cached(path: Path) -> None:
     """Avoid launching Windows ACL utilities for every API request."""

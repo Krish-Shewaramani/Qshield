@@ -11,10 +11,18 @@ from backend.app.key_management.errors import (
     KeyNotFoundError,
 )
 from backend.app.key_management.unlock_rate_limiter import UnlockAdmissionError
+from backend.app.key_management.contacts import (
+    RecipientBlockedError,
+    ensure_recipient_not_retired,
+)
 from backend.app.key_management.fingerprints import key_id
 from backend.app.key_management.key_service import KeyService
 from backend.app.key_management.models import TrustedKeyRecord
-from backend.app.key_management.trust_store import TrustStore
+from backend.app.key_management.trust_store import (
+    USAGE_FULL,
+    USAGE_VERIFY_ONLY,
+    TrustStore,
+)
 
 
 class FileExchangeInputError(Exception):
@@ -35,6 +43,10 @@ class FileExchangePrivateKeyUnavailable(FileExchangeInputError):
 
 class FileExchangeUnlockRateLimited(FileExchangeInputError):
     """Global unlock admission rejected the operation."""
+
+
+class FileExchangeRecipientBlocked(FileExchangeInputError):
+    """A contact retired the recipient key, or contact state could not be checked."""
 
 
 class FileExchangeService:
@@ -114,6 +126,14 @@ class FileExchangeService:
             raise FileExchangeInputError from exc
 
     def _trusted_key(self, identifier: str, expected_algorithm: str) -> TrustedKeyRecord:
+        if expected_algorithm == key_serialization.MLKEM:
+            # Contact lifecycle is checked before trust: a retired contact key is
+            # never a recipient, even if its trust-store entry is stale.
+            try:
+                # Derived from the trust store, so no construction path skips the guard.
+                ensure_recipient_not_retired(self.trust.directory, identifier)
+            except RecipientBlockedError as exc:
+                raise FileExchangeRecipientBlocked from exc
         try:
             record = self.trust.get(identifier)
         except KeyNotFoundError as exc:
@@ -121,6 +141,15 @@ class FileExchangeService:
         except KeyManagementError as exc:
             raise FileExchangeInputError from exc
         if not record.trusted or record.algorithm != expected_algorithm:
+            raise FileExchangeUntrustedSender from None
+        # Recipients (new encryption) need full trust. Senders may also be
+        # verification-only retired contact keys, so older packages still verify.
+        allowed_usages = (
+            {USAGE_FULL}
+            if expected_algorithm == key_serialization.MLKEM
+            else {USAGE_FULL, USAGE_VERIFY_ONLY}
+        )
+        if record.usage not in allowed_usages:
             raise FileExchangeUntrustedSender from None
         try:
             public_key = key_serialization.import_public_key(

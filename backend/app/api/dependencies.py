@@ -2,6 +2,7 @@
 
 from backend.app.core.config import key_data_dir, trust_data_dir
 from fastapi import Depends
+from backend.app.key_management.contacts import ContactService, ContactStore, contacts_directory_for
 from backend.app.key_management.key_service import KeyService
 from backend.app.key_management.key_storage import KeyStore
 from backend.app.key_management.trust_store import TrustStore
@@ -21,3 +22,9 @@ def get_file_exchange_service(
     trust: TrustStore = Depends(get_trust_store),
 ) -> FileExchangeService:
     return FileExchangeService(keys, trust)
+
+
+def get_contact_service(trust: TrustStore = Depends(get_trust_store)) -> ContactService:
+    # Contacts write trust only through the same TrustStore that file exchange reads,
+    # and live beside it so a test or override of the trust store moves both together.
+    return ContactService(ContactStore(contacts_directory_for(trust.directory)), trust)

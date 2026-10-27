@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react'
-import { api, type KeyRecord, type TrustedKeyRecord, type VerifyResponse } from './api'
+import { api, fullyTrusted, type KeyRecord, type TrustedKeyRecord, type VerifyResponse } from './api'
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024
 const MAX_PACKAGE_SIZE = MAX_FILE_SIZE + 64 * 1024
@@ -22,11 +22,13 @@ export default function FileExchange({ mode }: { mode: 'encrypt' | 'verify' }) {
   const [working, setWorking] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [contactStorageWarning, setContactStorageWarning] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const verificationRequestRef = useRef(0)
 
   useEffect(() => {
     let active = true
+    void api.getContactStorage().then((state) => { if (active) setContactStorageWarning(state.state === 'ready' ? '' : (state.message ?? 'Contact storage is unavailable.')) }).catch(() => undefined)
     void Promise.allSettled([api.listKeys(), api.listTrustedKeys()]).then(([keyResult, trustResult]) => {
       if (!active) return
       const failures: string[] = []
@@ -99,6 +101,8 @@ export default function FileExchange({ mode }: { mode: 'encrypt' | 'verify' }) {
       if (requestId !== verificationRequestRef.current) return
       if (!result.verified) throw new Error('The backend did not confirm this sender signature.')
       setVerified(result); setVerificationStatus('verified'); setNotice('Signature verified against the selected trusted sender key.')
+      // Select the local key this package is addressed to; never guess another key.
+      setRecipientId(kemKeys.some((record) => record.key_id === result.recipient_key_id) ? result.recipient_key_id : '')
     } catch (reason) {
       if (requestId === verificationRequestRef.current) {
         setVerificationStatus('failed')
@@ -125,10 +129,16 @@ export default function FileExchange({ mode }: { mode: 'encrypt' | 'verify' }) {
     } finally { setPassphrase(''); setWorking(false) }
   }
 
-  const kemTrusted = trusted.filter((record) => record.algorithm === 'ML-KEM-768' && record.trusted)
+  // Only fully trusted ML-KEM keys may receive new encryption; retired or suspended contact keys are excluded.
+  // The backend enforces this too; the list only avoids offering a key it will refuse.
+  const kemTrusted = trusted.filter((record) => record.algorithm === 'ML-KEM-768' && fullyTrusted(record) && record.contact_key_state !== 'retired')
   const signatureKeys = keys.filter((record) => record.algorithm === 'ML-DSA-65')
   const kemKeys = keys.filter((record) => record.algorithm === 'ML-KEM-768')
-  const signatureTrusted = trusted.filter((record) => record.algorithm === 'ML-DSA-65' && record.trusted)
+  const signatureTrusted = trusted.filter((record) => record.algorithm === 'ML-DSA-65' && fullyTrusted(record))
+  // The only local private key that can open a verified package is the one named in its header.
+  const addressedKey = verified ? kemKeys.find((record) => record.key_id === verified.recipient_key_id) : undefined
+  // Retired contact signing keys stay available only to verify older packages.
+  const signatureHistory = trusted.filter((record) => record.algorithm === 'ML-DSA-65' && record.trusted && record.usage === 'verify_only')
 
   return <section className="exchange-page" aria-labelledby="exchange-title">
     <div className="page-intro">
@@ -155,6 +165,7 @@ export default function FileExchange({ mode }: { mode: 'encrypt' | 'verify' }) {
         {mode === 'encrypt' ? <form className="exchange-form" onSubmit={encrypt}>
           <label className="field-label" htmlFor="recipient-key">Trusted recipient · ML-KEM-768</label>
           <select id="recipient-key" value={recipientId} onChange={(event) => setRecipientId(event.target.value)} required disabled={loading || kemTrusted.length === 0}><option value="">{loading ? 'Loading trusted keys…' : 'Choose a trusted recipient'}</option>{kemTrusted.map((record) => <option key={record.key_id} value={record.key_id}>{record.label} · {record.key_id.slice(0, 12)}…</option>)}</select>
+          {mode === 'encrypt' && contactStorageWarning && <p className="inline-error" role="alert">{contactStorageWarning}</p>}
           {kemTrusted.length === 0 && !loading && <p className="field-hint">Import and explicitly trust a recipient’s ML-KEM-768 public key in Key Management.</p>}
           <label className="field-label" htmlFor="signing-key">Your signing key · ML-DSA-65</label>
           <select id="signing-key" value={signingId} onChange={(event) => setSigningId(event.target.value)} required disabled={loading || signatureKeys.length === 0}><option value="">{loading ? 'Loading local keys…' : 'Choose your signing key'}</option>{signatureKeys.map((record) => <option key={record.key_id} value={record.key_id}>{record.label} · {record.key_id.slice(0, 12)}…</option>)}</select>
@@ -164,8 +175,8 @@ export default function FileExchange({ mode }: { mode: 'encrypt' | 'verify' }) {
         </form> : <div className="exchange-form">
           <form onSubmit={verifyPackage}>
             <label className="field-label" htmlFor="sender-key">Trusted sender · ML-DSA-65</label>
-            <select id="sender-key" value={senderId} onChange={(event) => { setSenderId(event.target.value); setError(''); setNotice(''); invalidateVerification() }} required disabled={loading || signatureTrusted.length === 0}><option value="">{loading ? 'Loading trusted keys…' : 'Choose a trusted sender'}</option>{signatureTrusted.map((record) => <option key={record.key_id} value={record.key_id}>{record.label} · {record.key_id.slice(0, 12)}…</option>)}</select>
-            {signatureTrusted.length === 0 && !loading && <p className="field-hint">Import and explicitly trust the sender’s ML-DSA-65 public key in Key Management.</p>}
+            <select id="sender-key" value={senderId} onChange={(event) => { setSenderId(event.target.value); setError(''); setNotice(''); invalidateVerification() }} required disabled={loading || signatureTrusted.length + signatureHistory.length === 0}><option value="">{loading ? 'Loading trusted keys…' : 'Choose a trusted sender'}</option>{signatureTrusted.map((record) => <option key={record.key_id} value={record.key_id}>{record.label} · {record.key_id.slice(0, 12)}…</option>)}{signatureHistory.length > 0 && <optgroup label="Retired keys · verification of older packages only">{signatureHistory.map((record) => <option key={record.key_id} value={record.key_id}>{record.label} · {record.key_id.slice(0, 12)}…</option>)}</optgroup>}</select>
+            {signatureTrusted.length + signatureHistory.length === 0 && !loading && <p className="field-hint">Import and explicitly trust the sender’s ML-DSA-65 public key in Key Management.</p>}
             <button className="button button-secondary form-submit" type="submit" disabled={working || loading || !file || !senderId}>{working ? 'Checking signature…' : 'Verify sender signature'} <span aria-hidden="true">✓</span></button>
           </form>
 
@@ -176,12 +187,16 @@ export default function FileExchange({ mode }: { mode: 'encrypt' | 'verify' }) {
 
           {verified && verificationStatus === 'verified' && <form className="decrypt-form" onSubmit={decryptPackage}>
             <div className="panel-heading decrypt-heading"><div><p className="eyebrow">STEP 03 · AUTHENTICATED DECRYPTION</p><h2>Recover the original file</h2></div></div>
+            {!addressedKey && !loading && <p className="inline-error" role="alert">This package is addressed to encryption key {verified.recipient_key_id.slice(0, 12)}…, which is not one of your local keys. Ask the sender to encrypt to the ML-KEM-768 key in your contact bundle.</p>}
+            {addressedKey && <>
             <label className="field-label" htmlFor="recipient-private-key">Your recipient key · ML-KEM-768</label>
-            <select id="recipient-private-key" value={recipientId} onChange={(event) => setRecipientId(event.target.value)} required disabled={loading || kemKeys.length === 0}><option value="">{loading ? 'Loading local keys…' : 'Choose your recipient key'}</option>{kemKeys.map((record) => <option key={record.key_id} value={record.key_id}>{record.label} · {record.key_id.slice(0, 12)}…</option>)}</select>
+            <select id="recipient-private-key" value={recipientId} onChange={(event) => setRecipientId(event.target.value)} required disabled={loading}><option value={addressedKey.key_id}>{addressedKey.label} · {addressedKey.key_id.slice(0, 12)}…</option></select>
+            <p className="field-hint">Selected automatically: this package names this key as its recipient.</p>
             <label className="field-label" htmlFor="recipient-passphrase">Private-key passphrase</label>
             <input id="recipient-passphrase" type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} required autoComplete="current-password" maxLength={1024} placeholder="Enter passphrase for this operation" />
             <p className="field-hint">The backend verifies the signature and authenticates the encrypted content before it returns recovered bytes.</p>
-            <button className="button button-primary form-submit" type="submit" disabled={working || loading || !file || verificationStatus !== 'verified' || !verified || !kemKeys.length}>{working ? 'Verifying and decrypting…' : 'Decrypt and download file'} <span aria-hidden="true">↓</span></button>
+            </>}
+            <button className="button button-primary form-submit" type="submit" disabled={working || loading || !file || verificationStatus !== 'verified' || !verified || !addressedKey || recipientId !== addressedKey.key_id}>{working ? 'Verifying and decrypting…' : 'Decrypt and download file'} <span aria-hidden="true">↓</span></button>
           </form>}
         </div>}
       </div>

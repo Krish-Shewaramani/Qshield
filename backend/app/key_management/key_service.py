@@ -22,6 +22,10 @@ class KeyService:
     def list_keys(self) -> list[KeyRecord]:
         return self.store.list_records()
 
+    def get_public_record(self, identifier: str) -> KeyRecord:
+        """Return a verified local key record's public, non-secret metadata."""
+        return self.store.get_record(identifier)
+
     def export_public_key(self, identifier: str) -> bytes:
         return self.store.export_public_key(identifier)
 

@@ -18,6 +18,7 @@ from backend.app.services.file_exchange_service import (
     FileExchangeInputError,
     FileExchangeMissingRecord,
     FileExchangePrivateKeyUnavailable,
+    FileExchangeRecipientBlocked,
     FileExchangeService,
     FileExchangeUnlockRateLimited,
     FileExchangeUntrustedSender,
@@ -54,6 +55,11 @@ async def encrypt_file(
         raise HTTPException(status_code=400, detail="selected private key is unavailable") from exc
     except FileExchangeMissingRecord as exc:
         raise HTTPException(status_code=404, detail="selected key was not found") from exc
+    except FileExchangeRecipientBlocked as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="selected recipient key was retired by a contact, or contact records could not be checked",
+        ) from exc
     except FileExchangeUntrustedSender as exc:
         raise HTTPException(status_code=400, detail="selected recipient key is unavailable") from exc
     except FileExchangeInputError as exc:

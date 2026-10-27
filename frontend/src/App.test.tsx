@@ -13,7 +13,7 @@ const otherContactSignature: TrustedKeyRecord = { algorithm: 'ML-DSA-65', key_id
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
 
-function installApiFetch(verifyStatus = 200, verificationSucceeded = true) {
+function installApiFetch(verifyStatus = 200, verificationSucceeded = true, recipientKeyId = localKem.key_id) {
   let keys = [localKem, localSignature]
   let trusted = [contactKem, contactSignature, otherContactSignature]
   const calls: Array<{ url: string; init: RequestInit }> = []
@@ -39,7 +39,7 @@ function installApiFetch(verifyStatus = 200, verificationSucceeded = true) {
       return json(created, 201)
     }
     if (url.endsWith('/api/encrypt') && init.method === 'POST') return new Response(new Uint8Array([81, 83, 72]), { status: 200 })
-    if (url.endsWith('/api/verify') && init.method === 'POST') return json({ verified: verificationSucceeded, sender_key_id: 'd'.repeat(64), recipient_key_id: 'a'.repeat(64), created_at: 1781913600 }, verifyStatus)
+    if (url.endsWith('/api/verify') && init.method === 'POST') return json({ verified: verificationSucceeded, sender_key_id: 'd'.repeat(64), recipient_key_id: recipientKeyId, created_at: 1781913600 }, verifyStatus)
     if (url.endsWith('/api/decrypt') && init.method === 'POST') {
       return new Response(new Uint8Array([112, 108, 97, 105, 110]), { status: 200, headers: { 'Content-Disposition': "attachment; filename*=UTF-8''r%C3%A9sum%C3%A9.txt" } })
     }
@@ -176,6 +176,33 @@ describe('QuantumShield frontend workflows', () => {
     expect(fields.get('sender_key_id')).toBe(contactSignature.key_id)
     expect(fields.get('passphrase')).toBe('recipient passphrase')
     expect(screen.queryByLabelText('Private-key passphrase')).toBeNull()
+  })
+
+  it('explains a package addressed to a key that is not local instead of offering decryption', async () => {
+    const user = userEvent.setup()
+    const { calls } = installApiFetch(200, true, '9'.repeat(64))
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Verify & decrypt/ }))
+    fireEvent.change(screen.getByLabelText('Select a .qshield package'), { target: { files: [new File(['package'], 'message.qshield')] } })
+    await user.selectOptions(screen.getByLabelText('Trusted sender · ML-DSA-65'), contactSignature.key_id)
+    await user.click(screen.getByRole('button', { name: /Verify sender signature/ }))
+    expect(await screen.findByText('Signature verified')).toBeTruthy()
+    expect(screen.getByText(/addressed to encryption key 999999999999…, which is not one of your local keys/)).toBeTruthy()
+    expect(screen.queryByLabelText('Private-key passphrase')).toBeNull()
+    expect((screen.getByRole('button', { name: /Decrypt and download file/ }) as HTMLButtonElement).disabled).toBe(true)
+    expect(calls.some((call) => call.url.endsWith('/api/decrypt'))).toBe(false)
+  })
+
+  it('selects the local recipient key named by the verified package', async () => {
+    const user = userEvent.setup()
+    installApiFetch()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Verify & decrypt/ }))
+    fireEvent.change(screen.getByLabelText('Select a .qshield package'), { target: { files: [new File(['package'], 'message.qshield')] } })
+    await user.selectOptions(screen.getByLabelText('Trusted sender · ML-DSA-65'), contactSignature.key_id)
+    await user.click(screen.getByRole('button', { name: /Verify sender signature/ }))
+    expect(await screen.findByText('Signature verified')).toBeTruthy()
+    expect((screen.getByLabelText('Your recipient key · ML-KEM-768') as HTMLSelectElement).value).toBe(localKem.key_id)
   })
 
   it('shows failure only after a verification request fails and keeps decryption unavailable', async () => {

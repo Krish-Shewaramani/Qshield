@@ -79,7 +79,7 @@ function App() {
           </div>
         </header>
 
-        {page === 'keys' ? <KeyManagement onKeysChanged={() => void refresh()} /> : page === 'encrypt' || page === 'verify' ? <FileExchange mode={page} /> : <>
+        {page === 'keys' ? <KeyManagement onKeysChanged={() => void refresh()} /> : page === 'encrypt' || page === 'verify' ? <FileExchange key={page} mode={page} /> : <>
         <section className="hero" aria-labelledby="hero-title">
           <div className="hero-copy">
             <p className="eyebrow"><span className="eyebrow-line" /> PRIVATE FILE EXCHANGE, REIMAGINED</p>

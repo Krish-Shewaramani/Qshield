@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes.health import router as health_router
 from backend.app.api.routes.file_exchange import router as file_exchange_router
+from backend.app.api.routes.contact_bundles import router as contact_bundles_router
+from backend.app.api.routes.contacts import router as contacts_router
 from backend.app.api.routes.keys import router as keys_router
 from backend.app.api.routes.trusted_keys import router as trusted_keys_router
 from backend.app.core.crypto_self_check import run_crypto_self_check
@@ -49,3 +51,5 @@ app.include_router(health_router, prefix="/api")
 app.include_router(file_exchange_router, prefix="/api")
 app.include_router(keys_router, prefix="/api")
 app.include_router(trusted_keys_router, prefix="/api")
+app.include_router(contact_bundles_router, prefix="/api")
+app.include_router(contacts_router, prefix="/api")
